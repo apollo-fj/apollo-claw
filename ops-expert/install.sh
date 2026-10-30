@@ -54,39 +54,43 @@ archive_url() {
   printf 'https://github.com/%s/archive/refs/heads/%s.tar.gz' "$1" "${2//\//%2F}"
 }
 
+validate_meta() {
+  local f="$1" v c p l pkg
+  [ -f "$f" ] || return 1
+  v=$(field "$f" RELEASE_VERSION)
+  c=$(field "$f" CLIENT_PACKAGE)
+  p=$(field "$f" PRESETS_PACKAGE)
+  l=$(field "$f" LAN_PACKAGE)
+  [ -n "$v" ] && [ -n "$c" ] && [ -n "$p" ] && [ -n "$l" ] || return 1
+  case "$v" in *[!A-Za-z0-9.+-]*) return 1 ;; esac
+  for pkg in "$c" "$p" "$l"; do
+    case "$pkg" in @*/*@*) ;; *) return 1 ;; esac
+  done
+}
+
 fetch_metadata() {
   local source="$1" repo="$2" branch="$3" raw
   raw=$(raw_url "$repo" "$branch")
   curl -fsSL "$raw/github-assets/release.env" -o "$TMP_DIR/$source.env" || return 1
   curl -fsSL "$raw/install.sh" -o "$TMP_DIR/$source.install.sh" || return 1
+  validate_meta "$TMP_DIR/$source.env" || return 1
 }
+
 field() { sed -n "s/^$2=//p" "$1" | head -1; }
 
-metadata_equal() {
+same_release() {
   local key
   for key in RELEASE_VERSION CLIENT_PACKAGE PRESETS_PACKAGE LAN_PACKAGE; do
     [ "$(field "$TMP_DIR/official.env" "$key")" = "$(field "$TMP_DIR/fork.env" "$key")" ] || return 1
   done
-  [ "$(sha256_file "$TMP_DIR/official.install.sh")" = "$(sha256_file "$TMP_DIR/fork.install.sh")" ]
-}
-
-choose_fork() {
-  local answer
-  if [ "$SOURCE_OVERRIDE" = fork ]; then return 0; fi
-  if [ "$SOURCE_OVERRIDE" = official ]; then return 1; fi
-  if [ ! -r /dev/tty ]; then
-    echo 'Official and fork sources differ. Re-run interactively, or set APOLLO_OPS_REPO_SOURCE=official|fork.' >&2
-    exit 2
-  fi
-  printf 'Use the fork links for this installation? [y/N] ' > /dev/tty
-  IFS= read -r answer < /dev/tty || answer=''
-  case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+  return 0
 }
 
 SKILLS_LOCAL="${APOLLO_OPS_SKILLS_SOURCE:-}"
 if [ -n "$SKILLS_LOCAL" ] && [ -f "$SKILLS_LOCAL/ops-expert/github-assets/release.env" ]; then
   echo "Using local checkout: $SKILLS_LOCAL"
   cp "$SKILLS_LOCAL/ops-expert/github-assets/release.env" "$TMP_DIR/local.env"
+  validate_meta "$TMP_DIR/local.env" || { echo 'Local release.env is incomplete.' >&2; exit 1; }
   SOURCE='local'
 else
   SKILLS_LOCAL=''
@@ -95,28 +99,32 @@ else
   fetch_metadata official "$OFFICIAL_REPO" "$OFFICIAL_BRANCH" && OFFICIAL_OK=1 || true
   fetch_metadata fork "$FORK_REPO" "$FORK_BRANCH" && FORK_OK=1 || true
 
-  if [ "$OFFICIAL_OK" -eq 1 ] && [ "$FORK_OK" -eq 1 ]; then
-    if metadata_equal; then
-      if [ "$SOURCE_OVERRIDE" = fork ]; then SOURCE='fork'; else SOURCE='official'; fi
-      printf 'Official and fork releases match; using %s links.\n' "$SOURCE"
-    else
-      echo 'Update detected: the official repository and your fork have different install scripts or release metadata.'
-      if choose_fork; then SOURCE='fork'; else SOURCE='official'; fi
-      printf 'Selected source: %s\n' "$SOURCE"
-    fi
-  elif [ "$OFFICIAL_OK" -eq 1 ] && [ "$FORK_OK" -eq 0 ]; then
-    echo 'The fork release metadata is unavailable; using the official repository.'
-    SOURCE='official'
-  elif [ "$OFFICIAL_OK" -eq 0 ] && [ "$FORK_OK" -eq 1 ]; then
-    echo 'Update detected: the official repository does not yet have these release files; your fork does.'
-    if choose_fork; then SOURCE='fork'; else
-      echo 'Official release is not ready. No packages were installed.' >&2
-      exit 2
-    fi
-  else
-    echo 'Could not read release metadata from either the official repository or your fork.' >&2
-    exit 1
-  fi
+  case "$SOURCE_OVERRIDE" in
+    official)
+      [ "$OFFICIAL_OK" -eq 1 ] || { echo "APOLLO_OPS_REPO_SOURCE=official but $OFFICIAL_REPO@$OFFICIAL_BRANCH has no valid release files." >&2; exit 1; }
+      SOURCE='official'
+      ;;
+    fork)
+      [ "$FORK_OK" -eq 1 ] || { echo "APOLLO_OPS_REPO_SOURCE=fork but $FORK_REPO@$FORK_BRANCH has no valid release files." >&2; exit 1; }
+      SOURCE='fork'
+      ;;
+    auto)
+      if [ "$OFFICIAL_OK" -eq 1 ]; then
+        SOURCE='official'
+        if [ "$FORK_OK" -eq 1 ] && ! same_release; then
+          echo '注意：fork 的版本与官方不同，按官方为准；需要强制用 fork 时设 APOLLO_OPS_REPO_SOURCE=fork。'
+        fi
+      elif [ "$FORK_OK" -eq 1 ]; then
+        SOURCE='fork'
+        echo "官方 $OFFICIAL_REPO@$OFFICIAL_BRANCH 还没有有效发布信息，改用 fork：$FORK_REPO@$FORK_BRANCH"
+      else
+        echo '官方与 fork 都没有有效的 release.env。' >&2
+        echo '若在合入前测试 fork 分支，请指定分支：' >&2
+        echo "  APOLLO_OPS_REPO_SOURCE=fork APOLLO_OPS_FORK_BRANCH=<分支> bash install.sh" >&2
+        exit 1
+      fi
+      ;;
+  esac
 fi
 
 if [ "$SOURCE" = official ]; then
