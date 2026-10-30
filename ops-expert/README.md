@@ -50,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/ApolloAuto/apollo-claw/EDU/ops-expe
 2. 从仓库当前分支下载 `apollo-env`、`apollo-dev`、`apollo-test`、`apollo-eval` 四个目录，复制到 `$DSH_HOME/skills`；已有同名目录先备份为 `<skill>.bak.<时间戳>`。
 3. 安装 `@apollo-ops/dsh-agent-presets`，把三个预设接入指定 profile。
 
-脚本会比较官方仓库与 fork 的 `release.env` 和安装脚本：一致时用官方链接，不一致时提示并询问是否改用 fork。`--with-lan` 额外安装 `@apollo-ops/dsh-lan-access`。完成后重启 DSH Web。
+脚本默认从 `ApolloAuto/apollo-claw` 的 `EDU` 分支读取 `ops-expert/github-assets/release.env` 和四个 Skill 目录；可用 `APOLLO_OPS_REPO`、`APOLLO_OPS_BRANCH` 指向其他仓库或分支。`--with-lan` 额外安装 `@apollo-ops/dsh-lan-access`。完成后重启 DSH Web。
 
 单独安装客户端插件：
 

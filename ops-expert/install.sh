@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OFFICIAL_REPO='ApolloAuto/apollo-claw'
-OFFICIAL_BRANCH='EDU'
-FORK_REPO='apollo-fj/apollo-claw'
-FORK_BRANCH="${APOLLO_OPS_FORK_BRANCH:-EDU}"
+REPO="${APOLLO_OPS_REPO:-ApolloAuto/apollo-claw}"
+BRANCH="${APOLLO_OPS_BRANCH:-EDU}"
 PROFILE="${DSH_PROFILE:-web}"
 DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
 WITH_LAN=0
-SOURCE_OVERRIDE="${APOLLO_OPS_REPO_SOURCE:-auto}"
 REQUIRED_SKILLS='apollo-env apollo-dev apollo-test apollo-eval'
 
 while [ "$#" -gt 0 ]; do
@@ -16,21 +13,16 @@ while [ "$#" -gt 0 ]; do
     --with-lan) WITH_LAN=1; shift ;;
     -h|--help)
       echo 'Usage: install.sh [--with-lan]'
-      echo 'Set APOLLO_OPS_REPO_SOURCE=official|fork to select a source explicitly.'
-      echo 'Set APOLLO_OPS_FORK_BRANCH to test a branch in your fork (default: EDU).'
-      echo 'Set APOLLO_OPS_SKILLS_SOURCE to a local checkout to install Skills from disk.'
+      echo 'Optional: APOLLO_OPS_REPO / APOLLO_OPS_BRANCH override the source (default ApolloAuto/apollo-claw EDU).'
+      echo 'Optional: APOLLO_OPS_SKILLS_SOURCE points at a local checkout for offline Skill install.'
       exit 0
       ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
-case "$SOURCE_OVERRIDE" in
-  auto|official|fork) ;;
-  *) echo 'APOLLO_OPS_REPO_SOURCE must be auto, official, or fork.' >&2; exit 2 ;;
-esac
-case "$FORK_BRANCH" in
-  ''|/*|*..*|*[!A-Za-z0-9._/-]*) echo 'Invalid APOLLO_OPS_FORK_BRANCH.' >&2; exit 2 ;;
+case "$BRANCH" in
+  ''|/*|*..*|*[!A-Za-z0-9._/-]*) echo "Invalid APOLLO_OPS_BRANCH: $BRANCH" >&2; exit 2 ;;
 esac
 
 for tool in dsh npm curl tar; do
@@ -54,6 +46,8 @@ archive_url() {
   printf 'https://github.com/%s/archive/refs/heads/%s.tar.gz' "$1" "${2//\//%2F}"
 }
 
+field() { sed -n "s/^$2=//p" "$1" | head -1; }
+
 validate_meta() {
   local f="$1" v c p l pkg
   [ -f "$f" ] || return 1
@@ -68,78 +62,20 @@ validate_meta() {
   done
 }
 
-fetch_metadata() {
-  local source="$1" repo="$2" branch="$3" raw
-  raw=$(raw_url "$repo" "$branch")
-  curl -fsSL "$raw/github-assets/release.env" -o "$TMP_DIR/$source.env" || return 1
-  curl -fsSL "$raw/install.sh" -o "$TMP_DIR/$source.install.sh" || return 1
-  validate_meta "$TMP_DIR/$source.env" || return 1
-}
-
-field() { sed -n "s/^$2=//p" "$1" | head -1; }
-
-same_release() {
-  local key
-  for key in RELEASE_VERSION CLIENT_PACKAGE PRESETS_PACKAGE LAN_PACKAGE; do
-    [ "$(field "$TMP_DIR/official.env" "$key")" = "$(field "$TMP_DIR/fork.env" "$key")" ] || return 1
-  done
-  return 0
-}
-
 SKILLS_LOCAL="${APOLLO_OPS_SKILLS_SOURCE:-}"
-if [ -n "$SKILLS_LOCAL" ] && [ -f "$SKILLS_LOCAL/ops-expert/github-assets/release.env" ]; then
-  echo "Using local checkout: $SKILLS_LOCAL"
-  cp "$SKILLS_LOCAL/ops-expert/github-assets/release.env" "$TMP_DIR/local.env"
-  validate_meta "$TMP_DIR/local.env" || { echo 'Local release.env is incomplete.' >&2; exit 1; }
-  SOURCE='local'
-else
-  SKILLS_LOCAL=''
-  OFFICIAL_OK=0
-  FORK_OK=0
-  fetch_metadata official "$OFFICIAL_REPO" "$OFFICIAL_BRANCH" && OFFICIAL_OK=1 || true
-  fetch_metadata fork "$FORK_REPO" "$FORK_BRANCH" && FORK_OK=1 || true
-
-  case "$SOURCE_OVERRIDE" in
-    official)
-      [ "$OFFICIAL_OK" -eq 1 ] || { echo "APOLLO_OPS_REPO_SOURCE=official but $OFFICIAL_REPO@$OFFICIAL_BRANCH has no valid release files." >&2; exit 1; }
-      SOURCE='official'
-      ;;
-    fork)
-      [ "$FORK_OK" -eq 1 ] || { echo "APOLLO_OPS_REPO_SOURCE=fork but $FORK_REPO@$FORK_BRANCH has no valid release files." >&2; exit 1; }
-      SOURCE='fork'
-      ;;
-    auto)
-      if [ "$OFFICIAL_OK" -eq 1 ]; then
-        SOURCE='official'
-        if [ "$FORK_OK" -eq 1 ] && ! same_release; then
-          echo '注意：fork 的版本与官方不同，按官方为准；需要强制用 fork 时设 APOLLO_OPS_REPO_SOURCE=fork。'
-        fi
-      elif [ "$FORK_OK" -eq 1 ]; then
-        SOURCE='fork'
-        echo "官方 $OFFICIAL_REPO@$OFFICIAL_BRANCH 还没有有效发布信息，改用 fork：$FORK_REPO@$FORK_BRANCH"
-      else
-        echo '官方与 fork 都没有有效的 release.env。' >&2
-        echo '若在合入前测试 fork 分支，请指定分支：' >&2
-        echo "  APOLLO_OPS_REPO_SOURCE=fork APOLLO_OPS_FORK_BRANCH=<分支> bash install.sh" >&2
-        exit 1
-      fi
-      ;;
-  esac
-fi
-
-if [ "$SOURCE" = official ]; then
-  META="$TMP_DIR/official.env"
-  REPO="$OFFICIAL_REPO"
-  BRANCH="$OFFICIAL_BRANCH"
-elif [ "$SOURCE" = fork ]; then
-  META="$TMP_DIR/fork.env"
-  REPO="$FORK_REPO"
-  BRANCH="$FORK_BRANCH"
-else
-  META="$TMP_DIR/local.env"
+if [ -n "$SKILLS_LOCAL" ]; then
+  META="$SKILLS_LOCAL/ops-expert/github-assets/release.env"
+  [ -f "$META" ] || { echo "缺少 $META" >&2; exit 1; }
+  echo "使用本地目录: $SKILLS_LOCAL"
   REPO=''
   BRANCH=''
+else
+  echo "来源: $REPO @ $BRANCH"
+  curl -fsSL "$(raw_url "$REPO" "$BRANCH")/github-assets/release.env" -o "$TMP_DIR/release.env" \
+    || { echo "无法读取 $REPO@$BRANCH 的 ops-expert/github-assets/release.env" >&2; exit 1; }
+  META="$TMP_DIR/release.env"
 fi
+validate_meta "$META" || { echo "release.env 内容不完整: $META" >&2; exit 1; }
 
 RELEASE_VERSION=$(field "$META" RELEASE_VERSION)
 CLIENT_PACKAGE=$(field "$META" CLIENT_PACKAGE)
